@@ -43,7 +43,7 @@ class ImageCaptioning(nn.Module):
         if cfg.pert_img_prob is not None and cfg.pert_img_prob > 0:
             # we need an image text matching loss on the pooled output
             # number of relationship is always 1, we use BCE loss
-            self.seq_relationship = nn.Linear(model.bert.pooler.dense.weight.shape[0], 1)
+            self.seq_relationship = nn.Linear(model.bert.pooler.dense.weight.shape[0], 1)   # (hidden_size, 1)
             assert self.cfg.mask_type != 'seq2seq', 'matching loss is useless'
         else:
             self.seq_relationship = None
@@ -112,7 +112,16 @@ class ImageCaptioning(nn.Module):
             if 'image' in data: data.pop('image')
 
         if self.training:
-
+            '''
+            result = {
+                masked_loss, for caption
+                class_logits, (Batchsize, vocab_size)
+                masked_ids, 
+                tag_loss, for CTN
+                tag_logits, (Batchsize, vocab_size)
+                tag_caption_loss, for tag-caption match
+            }
+            '''
             matched = data.get('matched')
             result = self.module(**data, return_dict=True)
             loss_dict = {}
