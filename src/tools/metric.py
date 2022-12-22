@@ -49,7 +49,7 @@ class MultiLabelAccuracy(Accuracy):
         """Computes the precision of multi label prediction"""
         with torch.no_grad():
             if target.size(1) > 1:
-                num_labels = target.sum(dim=1)
+                num_labels = target.sum(dim=1)  # (Batchsize, num_labels)
                 valid_indices = torch.nonzero(num_labels)
 
                 maxk = num_labels.max().int().item()
@@ -59,7 +59,7 @@ class MultiLabelAccuracy(Accuracy):
                 maxk = max(1, maxk)
                 topk, pred_topk = output.topk(maxk, dim=1, largest=True)
 
-                n = valid_indices.size(0)
+                n = valid_indices.size(0)   # n samples has at least 1 label
                 pred = torch.zeros_like(output).cuda()
 
                 if fast:

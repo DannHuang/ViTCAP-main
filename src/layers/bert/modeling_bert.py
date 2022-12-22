@@ -221,12 +221,13 @@ class BertEmbeddings(nn.Module):
 
     def forward(self, input_ids, token_type_ids=None, position_ids=None):
         seq_length = input_ids.size(1)
+        # (Batchsize, seq_length)
         if position_ids is None:
             position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
             position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
-
+        # (Batchsize, seq_length, hidden_size)
         words_embeddings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
@@ -292,6 +293,7 @@ class BertSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def transpose_for_scores(self, x):
+        # expand hiden_size into num_attention_heads * attention_head_size
         if torch._C._get_tracing_state():
             # exporter is not smart enough to detect dynamic size for some paths
             x = x.view(x.shape[0], -1, self.num_attention_heads, self.attention_head_size)
@@ -311,13 +313,13 @@ class BertSelfAttention(nn.Module):
             mixed_query_layer = self.query(hidden_states)
             mixed_key_layer = self.key(hidden_states)
             mixed_value_layer = self.value(hidden_states)
-
+        # (Batchsize, num_heads, seq_length, head_size)
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))   # (Batchsize, num_heads, seq_length, seq_length
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
         attention_scores = attention_scores + attention_mask
@@ -333,7 +335,7 @@ class BertSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = torch.matmul(attention_probs, value_layer)  # (Batchsize, num_heads, seq_length, hidden_size)
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
@@ -383,8 +385,9 @@ class BertAttention(nn.Module):
 
     def forward(self, input_tensor, attention_mask, head_mask=None,
             history_state=None):
+        # input_tensor: (Batchsize, seq_length, hidden_size)
         self_outputs = self.self(input_tensor, attention_mask, head_mask,
-                history_state)
+                history_state)  # (Batchsize, seq_length, hidden_size)
         attention_output = self.output(self_outputs[0], input_tensor)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
@@ -429,12 +432,12 @@ class BertLayer(nn.Module):
     def forward(self, hidden_states, attention_mask, head_mask=None,
                 history_state=None):
         attention_outputs = self.attention(hidden_states, attention_mask,
-                head_mask, history_state)
+                head_mask, history_state)   # (Batchsize, seq_length, hidden_size)
         attention_output = attention_outputs[0]
-        intermediate_output = self.intermediate(attention_output)
-        layer_output = self.output(intermediate_output, attention_output)
+        intermediate_output = self.intermediate(attention_output)   # (1, seq_length, intermediate_size=3072)
+        layer_output = self.output(intermediate_output, attention_output)   # (1, seq_length, hidden_size)
         outputs = (layer_output,) + attention_outputs[1:]  # add attentions if we output them
-        return outputs
+        return outputs  # (Batchsize, seq_length, hidden_size)
 
 
 class TIMMVitSplitEncoder(nn.Module):
@@ -485,6 +488,7 @@ class BertEncoder(nn.Module):
         self.output_attentions = config.output_attentions
 
         self.output_hidden_states = config.output_hidden_states
+        # 12 Bert Layer: (Batchsize, seq_length, hidden_size)
         self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
 
     def forward(self, hidden_states, attention_mask, head_mask=None,
@@ -499,7 +503,7 @@ class BertEncoder(nn.Module):
             layer_outputs = layer_module(
                     hidden_states, attention_mask, head_mask[i],
                     history_state)
-            hidden_states = layer_outputs[0]
+            hidden_states = layer_outputs[0]    # (1, seq_length, hidden_size)
 
             if self.output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
@@ -657,6 +661,61 @@ class BertCaptioningHeads(nn.Module):
         prediction_scores = self.predictions(sequence_output)
         return prediction_scores
 
+class tagCaptionLoss(nn.Module):
+    def __init__(self, config):
+        super().__init__
+        self.drop_worst_ratio = getattr(config, 'drop_worst_ratio', 0)
+        self.drop_worst_after = getattr(config, 'drop_worst_after', 0)
+        self.log_soft = nn.LogSoftmax(dim=1)
+        self.soft = nn.Softmax(dim = 1)
+        self.kl = nn.KLDivLoss(reduction='none')
+        self.iter = 0
+
+    def forward(self, logits, tag_logits, labels, masked_pos, masked_size):
+        '''
+        logits: (Batchsize * seq_length, vocab_size)
+        tag_logits: (Batchsize * seq_length, vocab_size)
+        labels: zero-one row vectors, (Batchsize, vocab_size)
+        '''
+        # # shortlist valid samples (with at least 1 label)
+        if labels.size(1) > 1:
+            num_labels = labels.sum(dim=1)  # (Batchsize, 1)
+            valid_indices = torch.nonzero(num_labels)   # valid sample index
+
+            maxk = num_labels.max().int().item()
+            maxk = max(1, maxk)     # max labels in batch
+            topk, pred_topk = tag_logits.topk(maxk, dim=1, largest=True)
+
+            n = valid_indices.size(0)   # n valid samples
+            pred = torch.zeros_like(tag_logits).cuda()
+
+            for i in range(n):
+                sample_index = valid_indices[i].item()
+                k = num_labels[sample_index].int().item()
+                pred[sample_index, pred_topk[sample_index, :k]] = 1
+
+            tag_logits = pred * tag_logits
+
+        tag_logit_forLoss = tag_logits.unsqueeze(1).expand(masked_size)     # (Batchsize, masked_length, hidden_size)
+        tag_logit_forLoss_masked = tag_logit_forLoss[masked_pos==1, :]      # (Batchsize * masked_length, hidden_size)
+        tag_logit_forLoss_masked = tag_logit_forLoss_masked.sigmoid()   # use sigmoid instead of softmax cauz its a multinomial
+        self.iter += 1
+        if logits.numel() == 0:
+            # this happens when we ignore masked tokens for unmatched
+            # image-text pairs, in which we may ignore all tokens
+            return torch.tensor(0., requires_grad=True, device=logits.device)
+        log_prb = self.log_soft(logits)
+        # TODO: KLD, CE, focal loss
+        loss = self.kl(log_prb, tag_logit_forLoss_masked).sum(1)  # (Batchsize * seq_length, 1)
+
+        if self.drop_worst_ratio > 0 and self.iter > self.drop_worst_after:
+            loss, _ = torch.topk(loss,
+                    k=int(loss.shape[0] * (1-self.drop_worst_ratio)),
+                    largest=False)
+        loss = loss.mean()
+
+        return loss
+
 
 class BertCaptioningLoss(nn.Module):
     def __init__(self, config):
@@ -669,6 +728,10 @@ class BertCaptioningLoss(nn.Module):
         self.iter = 0
 
     def forward(self, logits, target):
+        '''
+        logits: (Batchsize * seq_length, vocab_size)
+        target: 1-D
+        '''
         self.iter += 1
         if logits.numel() == 0:
             # this happens when we ignore masked tokens for unmatched
@@ -709,6 +772,8 @@ class ViTCAP(BertPreTrainedModel):
         # self._tie_or_clone_weights(self.tag_tokenizer.word_embeddings, self.cls.predictions.decoder)
 
         self.loss = BertCaptioningLoss(config)
+
+        self.tagCaptionLoss = tagCaptionLoss(config)
 
         if getattr(config, 'loss', None) == 'focal':
             from src.layers.loss import FocalLossWithLogitsNegLoss
@@ -755,6 +820,7 @@ class ViTCAP(BertPreTrainedModel):
                        return_hidden=False, gen_tag_ratio=None,):
 
         # Forward to compute the tag-gradient
+        # ((Batchsize, seq_length, hidden_size), (Batchsize, hidden_size)), (Batchsize, config.vocab_size)
         outputs, tag_logit = self.bert(input_ids,
                                        img_feats=img_feats,
                                        label=label,
@@ -779,11 +845,11 @@ class ViTCAP(BertPreTrainedModel):
                 # make it as padded id and we will remove
                 masked_ids.requires_grad = False
                 masked_ids[matched.logical_not()] = 0
-
-            sequence_output_masked = sequence_output[masked_pos==1, :]
-            class_logits = self.cls(sequence_output_masked)
-            masked_ids = masked_ids[masked_ids != 0]   # remove padding masks
+            sequence_output_masked = sequence_output[masked_pos==1, :]  # (Batchsize, seq_length, hidden_size)
+            class_logits = self.cls(sequence_output_masked) # FIXME(Batchsize * seq_length, config.vocab_size)
+            masked_ids = masked_ids[masked_ids != 0]   # remove padding masks # 1-D
             masked_loss = self.loss(class_logits.float(), masked_ids)
+            tag_caption_loss = self.tagCaptionLoss(class_logits.float(), tag_logit, label, masked_pos, sequence_output.size())
 
             # Tagger loss
             tag_loss = self.tag_loss(tag_logit, label)
@@ -800,6 +866,7 @@ class ViTCAP(BertPreTrainedModel):
                     'masked_ids': masked_ids,
                     'tag_loss': tag_loss,
                     'tag_logits': tag_logit,
+                    'tag_caption_loss': tag_caption_loss
                 }
                 if len(outputs) > 2:
                     # intermediate layers' infomation
@@ -1379,6 +1446,7 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
             self.encoder.layer[layer].attention.prune_heads(heads)
 
     def encode_tag_to_embedding(self, pred_topk, cls_emb=None, caption_len=20):
+        # (Batchsize, k, hidden_size)
         seq_length = pred_topk.size(1)
 
         # TAG classifier embedding
@@ -1415,6 +1483,7 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
         visual_attention = torch.zeros(img_feats.shape[0], 1, img_feats.shape[-2], img_feats.shape[-2]).cuda()
 
         # feed the image encodings into the encoder
+        # (Batchsize, config.num_attention_head, hidden_size)
         encoder_outputs, tag_encoder_outputs = self.encoder(img_feats,
                                                             visual_attention,
                                                             head_mask=head_mask,
@@ -1422,13 +1491,13 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
 
         # use the CLS token for Multi-Tags classification. Decoding here as the tags.
         pooled_output = self.pooler(tag_encoder_outputs)
-        logit = self.tag_logit(pooled_output)
+        logit = self.tag_logit(pooled_output)   # (Batchsize, config.vocab_size)
 
         # non-differentiable tokenization
         with torch.no_grad():
             offline_logit = torch.nn.functional.sigmoid(logit.detach())
             topk = self.config.topk
-            prob, pred_topk = offline_logit.topk(topk, dim=1, largest=True)
+            prob, pred_topk = offline_logit.topk(topk, dim=1, largest=True) # (Batchsize, k)
             topk_len = (prob >= 0.2).sum(dim=1)
 
         # Training mode. Attach it after 20th token (default caption length)
@@ -1437,7 +1506,7 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
             if gen_tag_ratio is not None:
                 # fuse the generated tags with GT tags at specific portion X%
                 for batch_idx, lab in enumerate(label):
-                    batch_tag = torch.nonzero(lab, as_tuple=False).squeeze(1)
+                    batch_tag = torch.nonzero(lab, as_tuple=False).squeeze(1)   # (config.vocab_size, 1)
                     batch_len = int((1 - gen_tag_ratio) * len(batch_tag))
                     indices = torch.randperm(batch_len)
                     batch_tag = batch_tag[indices]
@@ -1446,7 +1515,8 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
             # manually add the end token
             pred_topk[:, -1] = 102
 
-            # textual encoding
+            # language input embedding
+            # (Batchsize, hidden_size)
             embedding_output = self.embeddings(input_ids, position_ids=position_ids,
                                                token_type_ids=token_type_ids)
 
@@ -1483,14 +1553,14 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
                 # tag_embedding = self.encode_tag_to_embedding(pred_topk, cls_emb=None,)
                 tag_embedding = self.extra_embeddings(pred_topk,
                                                       position_ids=position_ids[:, -pred_topk.shape[1]:])
-
+            # (Batchsize, seq_length, hidden_size)
             embedding_output = self.embeddings(input_ids, position_ids=position_ids,
                                                token_type_ids=token_type_ids)
             embedding_output[:, -pred_topk.shape[1]:] = tag_embedding
 
         # =========================================== Bert Encoder ==================================================
         # FIXME: for Tagger CLS token to Visual Tokens
-        encoder_outputs = torch.cat([tag_encoder_outputs[:, 0, :].unsqueeze(1), encoder_outputs], 1)
+        encoder_outputs = torch.cat([tag_encoder_outputs[:, 0, :].unsqueeze(1), encoder_outputs], 1)    #(Batchsize, num_attention_head+1, hidden_size)
         attention_mask = torch.cat([attention_mask, attention_mask[:, -1].unsqueeze(1)], dim=1)
         attention_mask = torch.cat([attention_mask, torch.ones(attention_mask.shape[0],
                                                                attention_mask.shape[1], 1).cuda()], dim=2)
@@ -1499,18 +1569,19 @@ class ViTSplitCLSEmbModel(BertPreTrainedModel):
         extended_attention_mask = extended_attention_mask.to(
             dtype=next(self.parameters()).dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
+        # (Batchsize, num_attention_head+1 + seq_length, hidden_size)
         embedding_output = torch.cat((embedding_output, encoder_outputs), 1)
 
         decoder_outputs = self.decoder(embedding_output,
                                        extended_attention_mask,
                                        head_mask=head_mask,
                                        encoder_history_states=encoder_history_states)
-        decoder_outputs = decoder_outputs[0]
+        decoder_outputs = decoder_outputs[0]    # (1, seq_length, hidden_size)
 
         # =========================================== CLS Predict ==================================================
         sequence_output = decoder_outputs
         pooled_output = self.caption_pooler(sequence_output)
 
         outputs = (sequence_output, pooled_output,)
+        # ((seq_length, hidden_size), hidden_size), config.vocab_size
         return outputs, logit  # sequence_output, pooled_output,

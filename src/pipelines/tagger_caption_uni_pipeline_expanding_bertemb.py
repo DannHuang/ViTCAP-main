@@ -135,12 +135,13 @@ class ImageCaptioning(nn.Module):
                     # chance there is no masked tokens as we ignore it if it is
                     # not matched. One example is batch size = 2, mismatching
                     # rate is 0.5.
-                    batch_score = compute_score_with_logits(result['class_logits'], masked_ids)
+                    batch_score = compute_score_with_logits(result['class_logits'], masked_ids) # where argmax logits = masked ids
                     batch_acc = torch.sum(batch_score.float()) / torch.sum(data['masked_pos'])
                     logging.info('caption acc = {}'.format(batch_acc))
 
                     with torch.no_grad():
                         # compute mAP
+                        logging.info('Tag-Caption Loss = {}'.format(result['tag_caption_loss'].detach()))
                         logging.info('Tag Loss = {}'.format(result['tag_loss'].detach()))
                         logging.info('Tag Precision. = {}'.format(self.acc.prec()))
 
@@ -168,6 +169,7 @@ class ImageCaptioning(nn.Module):
 
             # FIXME: use nX multiplier to the caption loss.
             loss_dict['masked_loss'] = result['masked_loss']
+            loss_dict['tag_caption_loss'] = result['tag_caption_loss']
             return loss_dict
 
         else:
