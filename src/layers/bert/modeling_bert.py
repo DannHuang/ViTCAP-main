@@ -673,9 +673,10 @@ class tagCaptionLoss(nn.Module):
 
     def forward(self, logits, tag_logits, labels, masked_pos, masked_size):
         '''
-        logits: (Batchsize * seq_length, vocab_size)
-        tag_logits: (Batchsize * seq_length, vocab_size)
-        labels: zero-one row vectors, (Batchsize, vocab_size)
+        INPUTS: 
+            logits: (Batchsize * seq_length, vocab_size)
+            tag_logits: (Batchsize, vocab_size)
+            labels: zero-one row vectors, (Batchsize, vocab_size)
         '''
         # # shortlist valid samples (with at least 1 label)
         if labels.size(1) > 1:
@@ -687,18 +688,18 @@ class tagCaptionLoss(nn.Module):
             topk, pred_topk = tag_logits.topk(maxk, dim=1, largest=True)
 
             n = valid_indices.size(0)   # n valid samples
-            pred = torch.zeros_like(tag_logits).cuda()
+            pred = torch.zeros_like(tag_logits).cuda()  # (B, vocab_size)
 
             for i in range(n):
-                sample_index = valid_indices[i].item()
-                k = num_labels[sample_index].int().item()
+                sample_index = valid_indices[i].item()      # sample id with at least 1 label
+                k = num_labels[sample_index].int().item()   # how many labels in this sample
                 pred[sample_index, pred_topk[sample_index, :k]] = 1
 
             tag_logits = pred * tag_logits
 
-        tag_logit_forLoss = tag_logits.unsqueeze(1).expand(masked_size)     # (Batchsize, masked_length, hidden_size)
+        tag_logit_forLoss = tag_logits.unsqueeze(1).expand(-1, masked_size[1],-1)     # (Batchsize, masked_length, hidden_size)
         tag_logit_forLoss_masked = tag_logit_forLoss[masked_pos==1, :]      # (Batchsize * masked_length, hidden_size)
-        tag_logit_forLoss_masked = tag_logit_forLoss_masked.sigmoid()   # use sigmoid instead of softmax cauz its a multinomial
+        tag_logit_forLoss_masked = tag_logit_forLoss_masked.sigmoid()   # use sigmoid instead of softmax cuz it is a multinomial
         self.iter += 1
         if logits.numel() == 0:
             # this happens when we ignore masked tokens for unmatched
@@ -835,7 +836,7 @@ class ViTCAP(BertPreTrainedModel):
 
         all_sequence_output = outputs[0]
         if is_training and not torch._C._get_tracing_state():
-            sequence_output = outputs[0][:, :masked_pos.shape[-1], :]
+            sequence_output = outputs[0][:, :masked_pos.shape[-1], :]   # (B, masked_len, vocab_size)
             # num_masks_in_batch * hidden_size
             if matched is not None:
                 # if it is not matched, we make all the masked pos = 0 to ignore the
