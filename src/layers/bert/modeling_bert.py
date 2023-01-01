@@ -706,7 +706,7 @@ class tagCaptionLoss(nn.Module):
             # image-text pairs, in which we may ignore all tokens
             return torch.tensor(0., requires_grad=True, device=logits.device)
         log_prb = self.log_soft(logits)
-        # TODO: KLD, CE, focal loss
+        # TODO: KLD, CE, focal-loss
         loss = self.kl(log_prb, tag_logit_forLoss_masked).sum(1)  # (Batchsize * seq_length, 1)
 
         if self.drop_worst_ratio > 0 and self.iter > self.drop_worst_after:
@@ -846,8 +846,8 @@ class ViTCAP(BertPreTrainedModel):
                 # make it as padded id and we will remove
                 masked_ids.requires_grad = False
                 masked_ids[matched.logical_not()] = 0
-            sequence_output_masked = sequence_output[masked_pos==1, :]  # (Batchsize, seq_length, hidden_size)
-            class_logits = self.cls(sequence_output_masked) # FIXME(Batchsize * seq_length, config.vocab_size)
+            sequence_output_masked = sequence_output[masked_pos==1, :]  # (Batchsize * masked_length, hidden_size)
+            class_logits = self.cls(sequence_output_masked) # (Batchsize * masked_length, config.vocab_size)
             masked_ids = masked_ids[masked_ids != 0]   # remove padding masks # 1-D
             masked_loss = self.loss(class_logits.float(), masked_ids)
             tag_caption_loss = self.tagCaptionLoss(class_logits.float(), tag_logit, label, masked_pos, sequence_output.size())
