@@ -108,7 +108,13 @@ def do_train_dict(
         if use_amp:
             with torch.cuda.amp.autocast(enabled=use_amp):
                 loss_dict = model(dict_data)
-                losses = sum(loss for loss in loss_dict.values())
+                # losses = sum(loss for loss in loss_dict.values())
+                losses = 0
+                for k in loss_dict.keys():
+                    if k == 'masked_loss': losses += loss_dict[k]
+                    elif k == 'tag_caption_loss': losses += loss_dict[k] * 0.3
+                    elif k == 'tag_loss': losses += loss_dict[k]
+                    else: losses += loss_dict[k]
             scaler.scale(losses).backward()
             if gradient_clip:
                 scaler.unscale_(optimizer)
@@ -119,7 +125,13 @@ def do_train_dict(
             scaler.update()
         else:
             loss_dict = model(dict_data)
-            losses = sum(loss for loss in loss_dict.values())
+            # losses = sum(loss for loss in loss_dict.values())
+            losses = 0
+            for k in loss_dict.keys():
+                if k == 'masked_loss': losses += loss_dict[k]
+                elif k == 'tag_caption_loss': losses += loss_dict[k] * 0.3
+                elif k == 'tag_loss': losses += loss_dict[k]
+                else: losses += loss_dict[k]
             losses.backward()
             if gradient_clip:
                 total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)

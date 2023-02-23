@@ -1,6 +1,11 @@
 # ViTCAP
 
  This repo is an adjusted version of ViTCAP (https://github.com/lucidrains/vit-pytorch) in CVPR-2022 paper [Injecting Semantic Concepts into End-to-End Image Captioning](https://arxiv.org/abs/2112.05230).
+<<<<<<< HEAD
+=======
+
+ <img src="images/ViTCAP.png" width="650"> 
+>>>>>>> dev
 
  ViTCAP is an end-to-end transformer-based image captioning model. ViTCAP takes the raw images as input and predict: 
  1. Semantic concepts exist in the image, and 

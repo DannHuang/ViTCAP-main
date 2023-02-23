@@ -43,7 +43,7 @@ class ImageCaptioning(nn.Module):
         if cfg.pert_img_prob is not None and cfg.pert_img_prob > 0:
             # we need an image text matching loss on the pooled output
             # number of relationship is always 1, we use BCE loss
-            self.seq_relationship = nn.Linear(model.bert.pooler.dense.weight.shape[0], 1)
+            self.seq_relationship = nn.Linear(model.bert.pooler.dense.weight.shape[0], 1)   # (hidden_size, 1)
             assert self.cfg.mask_type != 'seq2seq', 'matching loss is useless'
         else:
             self.seq_relationship = None
@@ -112,7 +112,16 @@ class ImageCaptioning(nn.Module):
             if 'image' in data: data.pop('image')
 
         if self.training:
-
+            '''
+            result = {
+                masked_loss, for caption
+                class_logits, (Batchsize, vocab_size)
+                masked_ids, 
+                tag_loss, for CTN
+                tag_logits, (Batchsize, vocab_size)
+                tag_caption_loss, for tag-caption match
+            }
+            '''
             matched = data.get('matched')
             result = self.module(**data, return_dict=True)
             loss_dict = {}
@@ -135,12 +144,13 @@ class ImageCaptioning(nn.Module):
                     # chance there is no masked tokens as we ignore it if it is
                     # not matched. One example is batch size = 2, mismatching
                     # rate is 0.5.
-                    batch_score = compute_score_with_logits(result['class_logits'], masked_ids)
+                    batch_score = compute_score_with_logits(result['class_logits'], masked_ids) # where argmax logits = masked ids
                     batch_acc = torch.sum(batch_score.float()) / torch.sum(data['masked_pos'])
                     logging.info('caption acc = {}'.format(batch_acc))
 
                     with torch.no_grad():
                         # compute mAP
+                        logging.info('Tag-Caption Loss = {}'.format(result['tag_caption_loss'].detach()))
                         logging.info('Tag Loss = {}'.format(result['tag_loss'].detach()))
                         logging.info('Tag Precision. = {}'.format(self.acc.prec()))
 
@@ -168,6 +178,7 @@ class ImageCaptioning(nn.Module):
 
             # FIXME: use nX multiplier to the caption loss.
             loss_dict['masked_loss'] = result['masked_loss']
+            loss_dict['tag_caption_loss'] = result['tag_caption_loss']
             return loss_dict
 
         else:
